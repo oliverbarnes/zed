@@ -295,8 +295,27 @@ impl EditPredictionProvider for OllamaEditPredictionProvider {
                         let cursor_offset = cursor_position.to_offset(&buffer_snapshot);
                         let max_lookback = response.response.len().min(cursor_offset);
                         let start_offset = cursor_offset.saturating_sub(max_lookback);
+
+                        // Find the character index corresponding to start_offset
+                        let mut char_index = 0;
+
+                        for (byte_index, _) in response.response.char_indices() {
+                            if byte_index >= start_offset {
+                                break;
+                            }
+                            char_index += 1;
+                        }
+
+                        // Convert character index back to byte index
+                        let actual_start_offset = response
+                            .response
+                            .char_indices()
+                            .nth(char_index)
+                            .map(|(byte_index, _)| byte_index)
+                            .unwrap_or(start_offset);
+
                         let start_anchor =
-                            buffer_snapshot.anchor_at(start_offset, text::Bias::Left);
+                            buffer_snapshot.anchor_at(actual_start_offset, text::Bias::Left);
 
                         let completion_range = start_anchor..cursor_position;
 
@@ -362,12 +381,13 @@ impl EditPredictionProvider for OllamaEditPredictionProvider {
         let max_lookback = completion.text.len().min(cursor_offset);
         let start_offset = cursor_offset.saturating_sub(max_lookback);
         let text_before_cursor: String = buffer_snapshot
-            .text_for_range(start_offset..cursor_offset)
+            .chars_for_range(start_offset..cursor_offset)
             .collect();
 
         let mut prefix_len = 0;
         for i in 1..=completion.text.len().min(text_before_cursor.len()) {
-            if text_before_cursor.ends_with(&completion.text[..i]) {
+            let search: String = completion.text.chars().take(i).collect();
+            if text_before_cursor.ends_with(&search) {
                 prefix_len = i;
             }
         }
