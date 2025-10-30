@@ -878,7 +878,7 @@ fn into_copilot_responses(
                                     responses::ResponseFunctionOutput::Text(text.to_string())
                                 }
                                 LanguageModelToolResultContent::Image(image) => {
-                                    if model.supports_vision() {
+                                    if model.supports_images() {
                                         responses::ResponseFunctionOutput::Content(vec![
                                             responses::ResponseInputContent::InputImage {
                                                 image_url: Some(image.to_base64_url()),
@@ -916,7 +916,7 @@ fn into_copilot_responses(
                         }
 
                         MessageContent::Image(image) => {
-                            if model.supports_vision() {
+                            if model.supports_images() {
                                 parts.push(responses::ResponseInputContent::InputImage {
                                     image_url: Some(image.to_base64_url()),
                                     detail: Default::default(),

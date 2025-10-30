@@ -422,13 +422,8 @@ impl Render for EditPredictionButton {
                         .trigger(
                             IconButton::new("ollama-completion", icon)
                                 .icon_size(IconSize::Small)
-                                .tooltip(|window, cx| {
-                                    Tooltip::for_action(
-                                        "Ollama Completion",
-                                        &ToggleMenu,
-                                        window,
-                                        cx,
-                                    )
+                                .tooltip(|_window, cx| {
+                                    Tooltip::for_action("Ollama Completion", &ToggleMenu, cx)
                                 }),
                         )
                         .with_handle(self.popover_menu_handle.clone()),
