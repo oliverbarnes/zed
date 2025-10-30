@@ -101,6 +101,8 @@ impl Project {
             None => settings.shell.program(),
         };
 
+        let is_windows = self.path_style(cx).is_windows();
+
         let project_path_contexts = self
             .active_entry()
             .and_then(|entry_id| self.path_for_entry(entry_id, cx))
@@ -118,9 +120,8 @@ impl Project {
             .map(|p| self.active_toolchain(p, LanguageName::new("Python"), cx))
             .collect::<Vec<_>>();
         let lang_registry = self.languages.clone();
-        let fs = self.fs.clone();
         cx.spawn(async move |project, cx| {
-            let shell_kind = ShellKind::new(&shell);
+            let shell_kind = ShellKind::new(&shell, is_windows);
             let activation_script = maybe!(async {
                 for toolchain in toolchains {
                     let Some(toolchain) = toolchain.await else {
@@ -131,11 +132,7 @@ impl Project {
                         .await
                         .ok();
                     let lister = language?.toolchain_lister();
-                    return Some(
-                        lister?
-                            .activation_script(&toolchain, shell_kind, fs.as_ref())
-                            .await,
-                    );
+                    return Some(lister?.activation_script(&toolchain, shell_kind));
                 }
                 None
             })
@@ -170,18 +167,19 @@ impl Project {
                     match remote_client {
                         Some(remote_client) => match activation_script.clone() {
                             activation_script if !activation_script.is_empty() => {
-                                let activation_script = activation_script.join("; ");
+                                let separator = shell_kind.sequential_commands_separator();
+                                let activation_script =
+                                    activation_script.join(&format!("{separator} "));
                                 let to_run = format_to_run();
-                                let args =
-                                    vec!["-c".to_owned(), format!("{activation_script}; {to_run}")];
+                                let shell = remote_client
+                                    .read(cx)
+                                    .shell()
+                                    .unwrap_or_else(get_default_system_shell);
+                                let arg = format!("{activation_script}{separator} {to_run}");
+                                let args = shell_kind.args_for_shell(false, arg);
+
                                 create_remote_shell(
-                                    Some((
-                                        &remote_client
-                                            .read(cx)
-                                            .shell()
-                                            .unwrap_or_else(get_default_system_shell),
-                                        &args,
-                                    )),
+                                    Some((&shell, &args)),
                                     env,
                                     path,
                                     remote_client,
@@ -244,7 +242,7 @@ impl Project {
                     task_state,
                     shell,
                     env,
-                    settings.cursor_shape.unwrap_or_default(),
+                    settings.cursor_shape,
                     settings.alternate_scroll,
                     settings.max_scroll_history_lines,
                     is_via_remote,
@@ -329,16 +327,17 @@ impl Project {
             .map(|p| self.active_toolchain(p, LanguageName::new("Python"), cx))
             .collect::<Vec<_>>();
         let remote_client = self.remote_client.clone();
-        let shell_kind = ShellKind::new(&match &remote_client {
+        let shell = match &remote_client {
             Some(remote_client) => remote_client
                 .read(cx)
                 .shell()
                 .unwrap_or_else(get_default_system_shell),
             None => settings.shell.program(),
-        });
+        };
+
+        let shell_kind = ShellKind::new(&shell, self.path_style(cx).is_windows());
 
         let lang_registry = self.languages.clone();
-        let fs = self.fs.clone();
         cx.spawn(async move |project, cx| {
             let activation_script = maybe!(async {
                 for toolchain in toolchains {
@@ -350,11 +349,7 @@ impl Project {
                         .await
                         .ok();
                     let lister = language?.toolchain_lister();
-                    return Some(
-                        lister?
-                            .activation_script(&toolchain, shell_kind, fs.as_ref())
-                            .await,
-                    );
+                    return Some(lister?.activation_script(&toolchain, shell_kind));
                 }
                 None
             })
@@ -374,7 +369,7 @@ impl Project {
                     None,
                     shell,
                     env,
-                    settings.cursor_shape.unwrap_or_default(),
+                    settings.cursor_shape,
                     settings.alternate_scroll,
                     settings.max_scroll_history_lines,
                     is_via_remote,
@@ -415,14 +410,19 @@ impl Project {
         terminal: &Entity<Terminal>,
         cx: &mut Context<'_, Project>,
         cwd: Option<PathBuf>,
-    ) -> Result<Entity<Terminal>> {
+    ) -> Task<Result<Entity<Terminal>>> {
+        // We cannot clone the task's terminal, as it will effectively re-spawn the task, which might not be desirable.
+        // For now, create a new shell instead.
+        if terminal.read(cx).task().is_some() {
+            return self.create_terminal_shell(cwd, cx);
+        }
         let local_path = if self.is_via_remote_server() {
             None
         } else {
             cwd
         };
 
-        terminal
+        let new_terminal = terminal
             .read(cx)
             .clone_builder(cx, local_path)
             .map(|builder| {
@@ -447,7 +447,8 @@ impl Project {
                 .detach();
 
                 terminal_handle
-            })
+            });
+        Task::ready(new_terminal)
     }
 
     pub fn terminal_settings<'a>(
@@ -476,7 +477,8 @@ impl Project {
             .and_then(|remote_client| remote_client.read(cx).shell())
             .map(Shell::Program)
             .unwrap_or_else(|| settings.shell.clone());
-        let builder = ShellBuilder::new(&shell).non_interactive();
+        let is_windows = self.path_style(cx).is_windows();
+        let builder = ShellBuilder::new(&shell, is_windows).non_interactive();
         let (command, args) = builder.build(Some(command), &Vec::new());
 
         let mut env = self
@@ -552,7 +554,7 @@ fn create_remote_shell(
         Shell::WithArguments {
             program: command.program,
             args: command.args,
-            title_override: Some(format!("{} — Terminal", host).into()),
+            title_override: Some(format!("{} — Terminal", host)),
         },
         command.env,
     ))
